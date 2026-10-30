@@ -1,0 +1,204 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name    "dockermirror">
+<!ENTITY author  "Kevin">
+<!ENTITY version "2026.10.30">
+]>
+<PLUGIN name="&name;"
+        author="&author;"
+        version="&version;"
+        pluginURL=""
+        launch="Settings/Dockermirror"
+        icon="globe"
+        min="6.9.0">
+
+<CHANGES>
+### 2026.10.30
+- 本地自包含版：插件文件内嵌，无需外网即可安装。
+- 安装/卸载不重启任何服务，不会出现「操作将在后台继续进行」提示。
+- 安装、卸载、开机均不重启 Docker。
+</CHANGES>
+
+<DESCRIPTION>
+一键切换 Docker 镜像加速源（本地离线安装版）。配置保存至 U 盘，开机自动生效、重启不丢失。
+</DESCRIPTION>
+
+<FILE Run="/bin/bash">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+NAME="dockermirror"
+VER="2026.10.30"
+CONFIG="/boot/config/plugins/${NAME}"
+PLUGIN_DIR="/usr/local/emhttp/plugins/${NAME}"
+B64="${CONFIG}/.bundle.b64"
+TGZ="${CONFIG}/${NAME}-${VER}.tgz"
+
+mkdir -p "${CONFIG}" "${PLUGIN_DIR}"
+cat > "${B64}" <<'B64EOF'
+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
+UkfksRvy0J7c8XGczkZIxYeS28QAawfFzbAzk0EJIGN4Exm1msXqqFetCkv/4mowkMncLX3ijPBi
+txTGrrV6BwqUqXl4NWdMKmGLlbd99vz0JgaLEw/JPC/UrD+F5kzGI4JUZm8X7eWaXnZGuXieqcny
+PpTgpZ4EtNdJ0tc4w6wrzRLQxSuwVjQjN67UoNGFm0ooc74SE0QcFbGHdEKVEctUBaMWfkihftaR
+dKaVjg3oxtybR5fmptBTSN4/qlw5T/sKAOWzbAAH6LMHIkJgM0RhRrlZXjbBR2Nb+FVY95URN5qR
+aCuTwkKy3MkFgys/DAlicIXOB9AQpMXLNNfCMBNgECrSXE1yNflkKwpOn4ZmZ28elAfOy+l35KFB
+eehqvszFSXlhTOOCoe8xF6htCcXgZnFelBa4T3cn+36Zd5fmKWP7l+bOycNp2oHgAyiXJ3HgP4l1
+uzpgEShNuMMahoc2aQ41j8aWFCDToaIgsYtwYAr8BlCloA2ZGqNmGu5mdy3KJ84oE5eU11LKuyPA
+XGV8FkxDNjWaubCD1Bk28JfY0kqk6/S8K5Dv9aCQxGspMP/IkhNKVAFfMKkQbjAdZ67/NNd//nav
+//T6nd6aGl+1x2Ou/zTXfxZd/yl2P/j4X3n9p9tdU1OdX/9ZU4PXf9bUeM31nw/jGF6/9oVHLX+G
+x/qjrS+uboO/z+CfT/4u/L4kfPOHJSWPeFtXP7uh9wc/PrHpD/8G/cEnkqd/eM3//hs/+FHFx/7r
+3X94avT8ixsPful//uMTe3/8/l9fLf/fV7918xf/7nnuX9//5tlN12tGD/uvXO/Y8NXnZm1v/+z7
+Fu73H/u3bds/s/Hj6/v+svWxv/jpfy+eR73feark8MCZSu78Xz1V8sqP1uw6szf2aPP7xx5/7F8e
+Hf3OiSvl76V3Sp/8wk+/X3Lh2Z9EOjfv+vnHfvL8s3+6c+svxM9ffu9rrtRju0+91zTZVG15te9b
+tpLP7H7tkdV/+5TL8/4rf9TxaPCTTQunH/nGi59avTb25d/7xs6S1MFHVn/nzV2f/flnvbu//sN/
++vTHCRtyJWfLL58s+dTjF79/ouPREkfJd9c+8uVHyKPa/7vjtj8HJ999z/b8i+lHUj+r/Z0/Hv+7
+9baWY58bODD+922Va2YbH/2Ta9/75+qW//xc+uC1f+wau/7F1V9Y9b1Pr/vi5zGE1pa1q6eeA9ym
+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
+B64EOF
+
+base64 -d "${B64}" > "${TGZ}" 2>/dev/null
+rm -f "${B64}"
+tar -xzf "${TGZ}" -C / 2>/dev/null
+
+chmod 755 "${PLUGIN_DIR}/scripts"/*.sh 2>/dev/null
+chmod 755 "${PLUGIN_DIR}/event"/* 2>/dev/null
+chmod 644 "${PLUGIN_DIR}"/*.page 2>/dev/null
+chmod 644 "${PLUGIN_DIR}"/*.png 2>/dev/null
+
+if [ ! -f "${CONFIG}/${NAME}.cfg" ]; then
+  echo 'MIRRORS=""' > "${CONFIG}/${NAME}.cfg"
+fi
+chmod 644 "${CONFIG}/${NAME}.cfg" 2>/dev/null
+
+"${PLUGIN_DIR}/scripts/apply.sh" --no-restart >/dev/null 2>&1
+echo "[${NAME}] 安装完成（未重启 Docker）"
+exit 0
+]]>
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+NAME="dockermirror"
+rm -rf "/usr/local/emhttp/plugins/${NAME}"
+rm -rf "/boot/config/plugins/${NAME}"
+echo "[${NAME}] 已卸载（未重启 Docker）"
+exit 0
+]]>
+</INLINE>
+</FILE>
+
+</PLUGIN>

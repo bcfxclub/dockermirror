@@ -1,0 +1,238 @@
+<?php
+/**
+ * Unraid Docker Folders - Image Pull API (SSE)
+ *
+ * Pulls a Docker image with real-time progress via Server-Sent Events.
+ *
+ * @package UnraidDockerModern
+ */
+
+require_once dirname(__DIR__) . '/include/config.php';
+require_once dirname(__DIR__) . '/include/auth.php';
+require_once dirname(__DIR__) . '/classes/DockerClient.php';
+require_once dirname(__DIR__) . '/classes/Database.php';
+require_once dirname(__DIR__) . '/classes/WebSocketPublisher.php';
+
+$method = $_SERVER['REQUEST_METHOD'];
+
+requireAuth();
+
+// Release the PHP session lock. Sessions are locked exclusively for the life
+// of a request, and local_prepend.php starts one for plugin API paths — so a
+// pull that runs for minutes would block every other request on this session,
+// including the rest of the Unraid webgui. Nothing below touches $_SESSION,
+// and POST CSRF was already validated by local_prepend.php before we ran.
+if (session_status() === PHP_SESSION_ACTIVE) {
+  session_write_close();
+}
+
+if ($method !== 'POST') {
+  header('Content-Type: application/json');
+  errorResponse('Method not allowed', 405);
+}
+
+$image = $_GET['image'] ?? null;
+
+if (!$image) {
+  header('Content-Type: application/json');
+  errorResponse('Image parameter is required', 400);
+}
+
+// Validate image name format
+if (!preg_match('/^[a-zA-Z0-9][a-zA-Z0-9._\/:@-]+$/', $image) || strlen($image) > 255) {
+  header('Content-Type: application/json');
+  errorResponse('Invalid image name', 400);
+}
+
+// Optional: restrict auto-recreate to specific container IDs.
+// Without this, the recreate step below matches by image and rebuilds *every*
+// container using it — surprising when several containers share an image. The
+// UI sends the exact set it showed the user so the two always agree. Absent
+// param keeps the original match-by-image behavior for other callers.
+$onlyContainerIds = null;
+$rawContainers = $_POST['containers'] ?? '';
+if (is_string($rawContainers) && $rawContainers !== '') {
+  $ids = [];
+  foreach (explode(',', $rawContainers) as $cid) {
+    $cid = trim($cid);
+    if (preg_match('/^[a-f0-9]{12,64}$/', $cid)) {
+      $ids[] = $cid;
+    }
+  }
+  if (empty($ids)) {
+    header('Content-Type: application/json');
+    errorResponse('Invalid container IDs', 400);
+  }
+  $onlyContainerIds = array_flip($ids);
+}
+
+// Force update: recreate the listed container(s) even when no update was
+// detected. Requires containers= so a force can never widen to every
+// container sharing the image.
+$forceRecreate = (($_POST['recreate'] ?? '') === '1');
+if ($forceRecreate && $onlyContainerIds === null) {
+  header('Content-Type: application/json');
+  errorResponse('recreate=1 requires containers=', 400);
+}
+
+// Recreate only: skip the pull and recreate the listed container(s) on the
+// image already on disk. Used to apply an update that was pulled earlier.
+// Pulling again would fail for an image built locally, and could swap in a
+// build newer than the one the user chose to apply.
+$recreateOnly = (($_POST['recreate_only'] ?? '') === '1');
+if ($recreateOnly && $onlyContainerIds === null) {
+  header('Content-Type: application/json');
+  errorResponse('recreate_only=1 requires containers=', 400);
+}
+
+// Allow unlimited execution time — image pulls can take minutes
+set_time_limit(0);
+ignore_user_abort(true);
+
+// Set SSE headers
+header('Content-Type: text/event-stream');
+header('Cache-Control: no-cache');
+header('X-Accel-Buffering: no');
+header('Connection: keep-alive');
+
+// Disable output buffering
+while (ob_get_level()) {
+  ob_end_flush();
+}
+
+function sendSSE($event, $data)
+{
+  echo "event: {$event}\n";
+  echo "data: " . json_encode($data) . "\n\n";
+  flush();
+}
+
+/**
+ * Recreate the containers selectRecreateTargets() picks, reporting each one.
+ */
+function recreateTargets($dockerClient, $image, $onlyContainerIds)
+{
+  try {
+    $selection = selectRecreateTargets($dockerClient->listContainers(true), $image, $onlyContainerIds);
+    $matchingContainers = $selection['targets'];
+
+    logUpdate("RECREATE Found " . count($matchingContainers) . " container(s) using {$image}");
+
+    foreach ($selection['missing'] as $missingId) {
+      $shortId = substr($missingId, 0, 12);
+      logUpdate("RECREATE SKIP {$shortId}: not found, or no longer uses {$image}");
+      sendSSE('recreate_error', [
+        'container' => $shortId,
+        'message' => "Container {$shortId} was not recreated: it no longer exists or does not use {$image}",
+      ]);
+    }
+
+    foreach ($matchingContainers as $container) {
+      $cName = $container['name'];
+      $cId = $container['id'];
+
+      sendSSE('recreating', ['container' => $cName, 'message' => "Recreating {$cName}..."]);
+
+      $recreateResult = recreateOneContainer($dockerClient, $cName, $cId);
+
+      if ($recreateResult['success']) {
+        sendSSE('recreated', ['container' => $cName, 'message' => "{$cName} updated successfully"]);
+      } else {
+        sendSSE('recreate_error', [
+          'container' => $cName,
+          'message' => "Failed to recreate {$cName}: {$recreateResult['error']}",
+        ]);
+      }
+    }
+  } catch (\Throwable $e) {
+    logUpdate("RECREATE ERROR {$image}: " . $e->getMessage());
+    sendSSE('recreate_error', ['container' => '', 'message' => 'Recreate failed: ' . $e->getMessage()]);
+  }
+}
+
+try {
+  $dockerClient = new DockerClient();
+
+  if ($recreateOnly) {
+    logUpdate("RECREATE ONLY {$image}");
+    sendSSE('status', ['message' => 'Recreating...']);
+    recreateTargets($dockerClient, $image, $onlyContainerIds);
+    try {
+      WebSocketPublisher::publish('container', 'updated');
+    } catch (\Throwable $e) {
+      logUpdate("RECREATE WARN {$image}: WebSocket publish failed: " . $e->getMessage());
+    }
+    sendSSE('complete', ['message' => 'Recreate complete', 'image' => $image]);
+    sendSSE('done', ['finished' => true]);
+    exit;
+  }
+
+  sendSSE('status', ['message' => "Pulling {$image}..."]);
+
+  $success = $dockerClient->pullImage($image, function ($chunk) {
+    $event = 'progress';
+    $data = [
+      'id' => $chunk['id'] ?? '',
+      'status' => $chunk['status'] ?? '',
+    ];
+
+    if (isset($chunk['progressDetail']) && !empty($chunk['progressDetail'])) {
+      $data['current'] = $chunk['progressDetail']['current'] ?? 0;
+      $data['total'] = $chunk['progressDetail']['total'] ?? 0;
+    }
+
+    if (isset($chunk['error'])) {
+      sendSSE('error', ['message' => $chunk['error']]);
+      return;
+    }
+
+    sendSSE($event, $data);
+  });
+
+  if ($success) {
+    logUpdate("PULL OK {$image}");
+
+    // Post-pull operations are non-critical — never let them prevent complete/done
+    try {
+      recordImagePulled($dockerClient, Database::getInstance(), $image);
+    } catch (\Throwable $e) {
+      logUpdate("PULL WARN {$image}: DB update failed: " . $e->getMessage());
+    }
+
+    try {
+      WebSocketPublisher::publish('updates', 'pulled', ['image' => $image]);
+      WebSocketPublisher::publish('container', 'updated');
+    } catch (\Throwable $e) {
+      logUpdate("PULL WARN {$image}: WebSocket publish failed: " . $e->getMessage());
+    }
+
+    // Check post_pull_action setting for auto-recreate
+    $postPullAction = 'pull_only';
+    try {
+      $db = Database::getInstance();
+      $row = $db->fetchOne('SELECT value FROM settings WHERE key = ?', ['post_pull_action']);
+      if ($row && !empty($row['value'])) {
+        $postPullAction = $row['value'];
+      }
+    } catch (\Throwable $e) {
+      logUpdate("PULL WARN {$image}: Settings fetch failed: " . $e->getMessage());
+    }
+
+    logUpdate("PULL post_pull_action={$postPullAction} for {$image}");
+
+    if ($postPullAction === 'pull_and_auto_recreate' || $forceRecreate) {
+      recreateTargets($dockerClient, $image, $onlyContainerIds);
+    }
+
+    sendSSE('complete', ['message' => 'Pull complete', 'image' => $image]);
+  } else {
+    $reason = $dockerClient->getLastError();
+    logUpdate("PULL FAIL {$image}" . ($reason !== '' ? ": {$reason}" : ''));
+    sendSSE('error', ['message' => 'Pull failed' . ($reason !== '' ? ": {$reason}" : '')]);
+  }
+} catch (\Throwable $e) {
+  logUpdate("PULL ERROR {$image}: " . $e->getMessage());
+  sendSSE('error', ['message' => $e->getMessage()]);
+}
+
+sendSSE('done', ['finished' => true]);

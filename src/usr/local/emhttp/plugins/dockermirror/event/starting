@@ -1,0 +1,14 @@
+#!/bin/bash
+# dockermirror - 开机钩子（服务启动前）
+#
+# 关键：本钩子在 Docker 服务启动「之前」执行，因此只需把 daemon.json 写好，
+# Docker 随后启动会自动读取 registry-mirrors —— 开机即生效，无需重启 Docker。
+#
+# 说明：Unraid 的 /etc 位于内存盘，重启后 daemon.json 会丢失，故每次开机都要重写。
+# 使用 --no-restart：绝不主动重启 Docker，避免打断正在运行的容器。
+
+SCRIPT="/usr/local/emhttp/plugins/dockermirror/scripts/apply.sh"
+if [ -x "$SCRIPT" ]; then
+  "$SCRIPT" --no-restart 2>&1 | logger -t dockermirror
+fi
+exit 0

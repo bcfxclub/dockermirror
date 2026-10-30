@@ -1,0 +1,13 @@
+#!/bin/bash
+# dockermirror - 开机兜底钩子（服务启动后）
+#
+# 正常情况下 event/starting 已在 Docker 启动前写好 daemon.json。
+# 此处仅作兜底：若配置尚未落地（例如本次启动 Docker 早于钩子），
+# 则补写一次，但依然「不重启 Docker」，避免打断刚启动的容器。
+# 用户可在插件页面点「保存并应用」立即生效。
+
+SCRIPT="/usr/local/emhttp/plugins/dockermirror/scripts/apply.sh"
+if [ -x "$SCRIPT" ]; then
+  "$SCRIPT" --no-restart 2>&1 | logger -t dockermirror
+fi
+exit 0

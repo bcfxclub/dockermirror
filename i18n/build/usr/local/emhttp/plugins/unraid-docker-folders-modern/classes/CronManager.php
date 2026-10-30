@@ -1,0 +1,236 @@
+<?php
+
+require_once dirname(__DIR__) . '/include/config.php';
+
+class CronManager
+{
+  // Unraid's update_cron only concatenates *.cron files under
+  // /boot/config/plugins/<plugin>/ into root's crontab; files dropped in
+  // /etc/cron.d/ are ignored (and clobbered) — so the schedule must live here.
+  const CRON_FILE = CONFIG_DIR . '/' . PLUGIN_NAME . '.cron';
+
+  // The spool update_cron installs into: `crontab -c /etc/cron.d -`. Any read
+  // of the live crontab must pass the same directory or it reads a different
+  // file that never holds a plugin line.
+  const CRON_SPOOL = '/etc/cron.d';
+  const UPDATE_SCRIPT = PLUGIN_DIR . '/scripts/check-updates.php';
+  const SCHEDULER_SCRIPT = PLUGIN_DIR . '/scripts/run-schedules.php';
+
+  private static $schedules = [
+    'hourly'      => '0 * * * *',
+    'daily'       => '0 3 * * *',
+    'twice_daily' => '0 3,15 * * *',
+    'weekly'      => '0 3 * * 0',
+  ];
+
+  public static function updateSchedule($schedule)
+  {
+    if ($schedule === 'disabled' || !isset(self::$schedules[$schedule])) {
+      self::removeLine('update-checks');
+    } else {
+      self::setLine('update-checks', self::$schedules[$schedule], self::UPDATE_SCRIPT);
+    }
+  }
+
+  public static function removeSchedule()
+  {
+    self::removeLine('update-checks');
+  }
+
+  /**
+   * Write or drop the runner line. It is wanted while any schedule is
+   * enabled, and in GraphQL mode, where the same runner also runs the
+   * backend watchdog (see BackendWatchdog).
+   *
+   * @return bool True when the line is now wanted, false when it was removed
+   *              because no schedule is enabled and the mode is PHP.
+   */
+  public static function ensureSchedulerCron($db = null)
+  {
+    if ($db === null) {
+      require_once dirname(__DIR__) . '/classes/Database.php';
+      $db = Database::getInstance();
+    }
+
+    $count = $db->fetchValue('SELECT COUNT(*) FROM schedules WHERE enabled = 1');
+    $mode = $db->fetchValue('SELECT value FROM settings WHERE key = ?', ['backend_mode']);
+
+    if ($count > 0 || $mode === 'graphql') {
+      self::setLine('schedule-runner', '* * * * *', self::SCHEDULER_SCRIPT);
+      return true;
+    }
+
+    self::removeLine('schedule-runner');
+    return false;
+  }
+
+  public static function removeSchedulerCron()
+  {
+    self::removeLine('schedule-runner');
+  }
+
+  /**
+   * Is the runner line actually in root's live crontab?
+   *
+   * The .cron file on flash is only the source. update_cron concatenates it
+   * into root's crontab, and nothing in this plugin notices if that step never
+   * happened. Reading the crontab back is the only way to tell.
+   *
+   * The -c flag is required and is not a detail. update_cron installs with
+   * `crontab -c /etc/cron.d -`, and a bare `crontab -l` reads a different
+   * spool that never holds these lines. Without it this returns false on a
+   * perfectly healthy box, and the warning row in the UI can never clear.
+   *
+   * Read-only, so a GET handler may call it.
+   *
+   * @return bool
+   */
+  public static function isSchedulerInstalled()
+  {
+    $output = [];
+    $status = 0;
+    @exec('crontab -c ' . escapeshellarg(self::CRON_SPOOL) . ' -l 2>/dev/null', $output, $status);
+
+    if ($status !== 0) {
+      return false;
+    }
+
+    foreach ($output as $line) {
+      if (strpos($line, 'docker-folders-modern:schedule-runner') !== false) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Put the runner line back when it has gone missing, and say what happened.
+   *
+   * An Unraid upgrade, a flash restore, or another plugin's failed install can
+   * rebuild root's crontab without our line in it. The runner cannot notice,
+   * because a runner that never fires cannot check on itself. The schedules
+   * screen is the next thing to look, so it repairs on the way past instead of
+   * asking the user to press a button for a fault they did not cause.
+   *
+   * The repair rewrites CONFIG_DIR, which is the USB flash device, so a box
+   * where it cannot succeed is throttled to one attempt per stale window.
+   *
+   * @return array{installed: bool, repaired: bool} 'repaired' is true only for
+   *         the request that put the line back, so the caller can explain that
+   *         the first run is still up to a minute away.
+   */
+  public static function repairSchedulerIfMissing()
+  {
+    if (self::isSchedulerInstalled()) {
+      return ['installed' => true, 'repaired' => false];
+    }
+
+    $last = file_exists(SCHEDULER_REPAIR_FILE) ? filemtime(SCHEDULER_REPAIR_FILE) : 0;
+    if ((time() - $last) < SCHEDULER_TICK_STALE_SECONDS) {
+      return ['installed' => false, 'repaired' => false];
+    }
+    @touch(SCHEDULER_REPAIR_FILE);
+
+    // No enabled schedule in PHP mode means the line is correctly absent, and
+    // rewriting it would be wrong rather than helpful.
+    if (!self::ensureSchedulerCron()) {
+      return ['installed' => false, 'repaired' => false];
+    }
+
+    $installed = self::isSchedulerInstalled();
+    return ['installed' => $installed, 'repaired' => $installed];
+  }
+
+  private static function setLine($tag, $cronExpr, $scriptPath)
+  {
+    $lines = self::readLines();
+    // update_cron pipes this into `crontab -` (root's user crontab), which uses
+    // 5 time fields + command — NO user field.
+    //
+    // Output goes to syslog rather than /dev/null so a PHP fatal in the script
+    // is visible. A healthy run prints nothing, so this writes nothing most
+    // minutes — it is not a heartbeat. SCHEDULER_TICK_FILE is the heartbeat.
+    $entry = "{$cronExpr} /usr/bin/php {$scriptPath} 2>&1 | logger -t " . PLUGIN_NAME;
+    $marker = "# docker-folders-modern:{$tag}";
+
+    $found = false;
+    foreach ($lines as $i => $line) {
+      if (strpos($line, "docker-folders-modern:{$tag}") !== false) {
+        $lines[$i] = $marker;
+        if (isset($lines[$i + 1])) {
+          $lines[$i + 1] = $entry;
+        } else {
+          $lines[] = $entry;
+        }
+        $found = true;
+        break;
+      }
+    }
+
+    if (!$found) {
+      $lines[] = $marker;
+      $lines[] = $entry;
+    }
+
+    self::writeLines($lines);
+  }
+
+  private static function removeLine($tag)
+  {
+    $lines = self::readLines();
+    $filtered = [];
+    $skipNext = false;
+
+    foreach ($lines as $line) {
+      if (strpos($line, "docker-folders-modern:{$tag}") !== false) {
+        $skipNext = true;
+        continue;
+      }
+      if ($skipNext) {
+        $skipNext = false;
+        continue;
+      }
+      $filtered[] = $line;
+    }
+
+    if (empty(array_filter($filtered, function ($l) { return trim($l) !== ''; }))) {
+      if (file_exists(self::CRON_FILE)) {
+        unlink(self::CRON_FILE);
+        self::reload();
+      }
+      return;
+    }
+
+    self::writeLines($filtered);
+  }
+
+  private static function readLines()
+  {
+    if (!file_exists(self::CRON_FILE)) {
+      return [];
+    }
+    $content = file_get_contents(self::CRON_FILE);
+    return $content ? explode("\n", rtrim($content, "\n")) : [];
+  }
+
+  private static function writeLines($lines)
+  {
+    $content = implode("\n", $lines) . "\n";
+    file_put_contents(self::CRON_FILE, $content);
+    chmod(self::CRON_FILE, 0644);
+    self::reload();
+  }
+
+  // update_cron concatenates every /boot/config/plugins/<plugin>/*.cron into
+  // root's crontab and signals the daemon; SIGHUP to crond is the fallback if
+  // the helper is absent (non-Unraid dev environments).
+  private static function reload()
+  {
+    if (is_executable('/usr/local/sbin/update_cron')) {
+      @exec('/usr/local/sbin/update_cron > /dev/null 2>&1');
+      return;
+    }
+    @exec('pkill -HUP crond > /dev/null 2>&1');
+  }
+}

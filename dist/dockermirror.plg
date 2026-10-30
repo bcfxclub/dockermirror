@@ -1,0 +1,94 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name      "dockermirror">
+<!ENTITY author    "Kevin">
+<!ENTITY version   "2026.10.30">
+<!ENTITY pluginURL "https://raw.githubusercontent.com/bcfxclub/dockermirror/main/dockermirror.plg">
+<!ENTITY bundle    "dockermirror-2026.10.30.tgz">
+<!ENTITY bundleURL "https://github.com/bcfxclub/dockermirror/releases/download/2026.10.30/dockermirror-2026.10.30.tgz">
+<!ENTITY md5       "c735ed8858ddbd80b37481cbd6f7c2f4">
+]>
+<PLUGIN name="&name;"
+        author="&author;"
+        version="&version;"
+        pluginURL="&pluginURL;"
+        launch="Settings/Dockermirror"
+        icon="globe"
+        min="6.9.0"
+        support="https://github.com/bcfxclub/dockermirror/issues"
+        project="https://github.com/bcfxclub/dockermirror"
+        readme="https://github.com/bcfxclub/dockermirror#readme">
+
+<CHANGES>
+### 2026.10.30
+- 修复安装/卸载时弹出「操作将在后台继续进行」提示：
+  安装与卸载脚本已精简为纯文件操作，不再重启 nginx、不再调用 python3。
+- 安装、卸载、开机均不会重启 Docker，绝不中断正在运行的容器。
+- 开机钩子改为 event/starting（Docker 启动前写入配置），开机即生效且零重启。
+- 修正腾讯云镜像源地址。
+- 去除 python3 依赖；daemon.json 改用纯 bash 处理，规避 sed 对 URL 斜杠的转义问题。
+- 支持通过 GitHub Release 部署与更新。
+
+### 2026.10.29.26
+- 旧版本（base64 内嵌包），存在安装耗时触发后台提示的问题。
+</CHANGES>
+
+<DESCRIPTION>
+一键切换 Docker 镜像加速源，提升镜像拉取速度；支持预设源与自定义，配置保存至 U 盘、开机自动生效、重启不丢失。
+</DESCRIPTION>
+
+<!-- 1. 下载插件包到 U 盘 -->
+<FILE Name="/boot/config/plugins/&name;/&bundle;">
+<URL>&bundleURL;</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<!-- 2. 解压安装（纯文件操作，立即完成） -->
+<FILE Run="/bin/bash">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+NAME="dockermirror"
+VER="2026.10.30"
+PLUGIN_DIR="/usr/local/emhttp/plugins/${NAME}"
+CONFIG="/boot/config/plugins/${NAME}"
+TGZ="${CONFIG}/${NAME}-${VER}.tgz"
+
+mkdir -p "${PLUGIN_DIR}" "${CONFIG}"
+tar -xzf "${TGZ}" -C / 2>/dev/null
+
+chmod 755 "${PLUGIN_DIR}/scripts"/*.sh 2>/dev/null
+chmod 755 "${PLUGIN_DIR}/event"/* 2>/dev/null
+chmod 644 "${PLUGIN_DIR}"/*.page 2>/dev/null
+chmod 644 "${PLUGIN_DIR}"/*.png 2>/dev/null
+
+# 首次安装生成默认配置（已存在则保留用户设置）
+if [ ! -f "${CONFIG}/${NAME}.cfg" ]; then
+  cp "${PLUGIN_DIR}/default.cfg" "${CONFIG}/${NAME}.cfg" 2>/dev/null
+fi
+chmod 644 "${CONFIG}/${NAME}.cfg" 2>/dev/null
+
+# 只写入配置，不重启 Docker
+"${PLUGIN_DIR}/scripts/apply.sh" --no-restart >/dev/null 2>&1
+
+echo "[${NAME}] 安装完成（未重启 Docker）"
+exit 0
+]]>
+</INLINE>
+</FILE>
+
+<!-- 3. 卸载（纯删除，立即完成） -->
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+<![CDATA[
+#!/bin/bash
+NAME="dockermirror"
+rm -rf "/usr/local/emhttp/plugins/${NAME}"
+rm -rf "/boot/config/plugins/${NAME}"
+echo "[${NAME}] 已卸载（未重启 Docker）"
+exit 0
+]]>
+</INLINE>
+</FILE>
+
+</PLUGIN>

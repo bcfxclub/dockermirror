@@ -1,0 +1,4 @@
+#!/bin/bash
+# 开机/系统就绪后重新应用 Docker 镜像源
+# 说明：Unraid 的 /etc 在内存中，重启会清空 daemon.json，故每次启动需重写
+/usr/local/emhttp/plugins/dockermirror/scripts/apply.sh 2>&1 | logger -t dockermirror

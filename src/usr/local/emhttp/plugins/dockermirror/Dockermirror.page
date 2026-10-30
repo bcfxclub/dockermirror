@@ -1,0 +1,199 @@
+Menu="Utilities"
+Title="Docker 镜像源切换"
+Icon="globe"
+Description="一键切换 Docker 镜像加速源，提升镜像拉取速度"
+Markdown="false"
+#command scripts/apply.sh
+---
+<?php
+/* dockermirror - Docker 镜像源切换（中文本地化） */
+$plugin      = 'dockermirror';
+$config_dir  = '/boot/config/plugins/'.$plugin;
+$config_file = $config_dir.'/'.$plugin.'.cfg';
+
+/* 读取已保存配置 */
+$saved = '';
+if (is_readable($config_file)) {
+  $raw = @file($config_file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+  if ($raw) {
+    foreach ($raw as $line) {
+      if (preg_match('/^\s*MIRRORS\s*=\s*(.*)$/', $line, $m)) {
+        $saved = trim($m[1], " \t\n\r\0\x0B\"'");
+        break;
+      }
+    }
+  }
+}
+
+/* 预设镜像源 */
+$presets = array(
+  'none'     => array('name'=>'不使用镜像源（默认）', 'url'=>'',  'desc'=>'直连 Docker Hub，不做加速'),
+  'daocloud' => array('name'=>'DaoCloud',            'url'=>'https://docker.m.daocloud.io',      'desc'=>'公共加速，免注册'),
+  'tencent'  => array('name'=>'腾讯云',              'url'=>'https://mirror.ccs.tencentyun.com', 'desc'=>'腾讯云公共镜像'),
+  'netease'  => array('name'=>'网易',                'url'=>'https://hub-mirror.c.163.com',      'desc'=>'网易公开镜像'),
+  'baidu'    => array('name'=>'百度',                'url'=>'https://mirror.baidubce.com',       'desc'=>'百度公开镜像'),
+  'ms1'      => array('name'=>'毫秒镜像',            'url'=>'https://docker.1ms.run',            'desc'=>'公共加速'),
+  'xuanyuan' => array('name'=>'轩辕镜像',            'url'=>'https://docker.xuanyuan.run',       'desc'=>'公共加速'),
+);
+
+/* 判断当前选中项 */
+$selected = 'custom';
+if ($saved === '') {
+  $selected = 'none';
+} else {
+  foreach ($presets as $k => $v) {
+    if ($v['url'] !== '' && $v['url'] === $saved) { $selected = $k; break; }
+  }
+}
+$custom_text = ($selected === 'custom') ? implode("\n", explode(',', $saved)) : '';
+
+/* Docker 运行状态与当前生效镜像源 */
+$docker_running = (trim(@shell_exec('docker info >/dev/null 2>&1; echo $?')) === '0');
+$effective = array();
+if ($docker_running) {
+  $info = @shell_exec('docker info --format "{{json .RegistryConfig.Mirrors}}" 2>/dev/null');
+  if ($info) {
+    $decoded = @json_decode(trim($info), true);
+    if (is_array($decoded)) { $effective = array_values(array_filter($decoded)); }
+  }
+}
+?>
+<style>
+.dm-wrap{max-width:860px;margin:10px auto;padding:0 14px;}
+.dm-card{border:1px solid #d9d9d9;border-radius:8px;padding:16px 18px;margin-bottom:16px;background:#fff;}
+.dm-card h2{margin:0 0 12px;font-size:16px;}
+.dm-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px dashed #eee;font-size:14px;flex-wrap:wrap;}
+.dm-row:last-child{border-bottom:none;}
+.dm-tag{display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;}
+.dm-tag.on{background:#e6f7ec;color:#1a7f37;}
+.dm-tag.off{background:#fdecea;color:#c0392b;}
+.dm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px;margin:10px 0;}
+.dm-preset{border:1px solid #e0e0e0;border-radius:6px;padding:10px 12px;cursor:pointer;transition:.15s;}
+.dm-preset:hover{border-color:#3b82f6;}
+.dm-preset.sel{border-color:#3b82f6;background:#f0f6ff;}
+.dm-preset .pn{font-weight:600;font-size:14px;}
+.dm-preset .pd{font-size:12px;color:#666;margin-top:4px;}
+.dm-area{width:100%;min-height:96px;font-family:monospace;font-size:13px;padding:8px;border:1px solid #ccc;border-radius:6px;box-sizing:border-box;}
+.dm-btn{padding:8px 18px;border:none;border-radius:6px;cursor:pointer;font-size:14px;margin-right:8px;}
+.dm-btn-primary{background:#3b82f6;color:#fff;}
+.dm-btn-ghost{background:#eee;color:#333;}
+.dm-hint{font-size:12px;color:#888;margin-top:6px;}
+.dm-wrap ul{font-size:13px;color:#555;line-height:1.8;}
+</style>
+
+<div class="dm-wrap">
+  <h1 style="font-size:20px;margin:0 0 4px;">Docker 镜像源切换</h1>
+  <p style="margin:0 0 14px;color:#666;font-size:13px;">
+    一键切换 Docker 镜像加速源。配置保存在 U 盘，开机自动写入；<strong>安装/卸载本插件不会重启 Docker</strong>，只有点击「保存并应用」且镜像源确实变化时才重启。
+  </p>
+
+  <div class="dm-card">
+    <h2>当前状态</h2>
+    <div class="dm-row">
+      <span>Docker 服务</span>
+      <span class="dm-tag <?php echo $docker_running ? 'on' : 'off'; ?>"><?php echo $docker_running ? '运行中' : '未运行'; ?></span>
+    </div>
+    <div class="dm-row">
+      <span>当前生效镜像源</span>
+      <span><?php echo $docker_running ? (count($effective) ? implode('、', $effective) : '（无，直连 Docker Hub）') : '—'; ?></span>
+    </div>
+    <div class="dm-row">
+      <span>插件已保存镜像源</span>
+      <span><?php echo $saved === '' ? '（无）' : implode('、', explode(',', $saved)); ?></span>
+    </div>
+  </div>
+
+  <form method="post" action="/update.php" target="progressFrame" id="dm_form">
+    <input type="hidden" name="csrf_token" value="<?php echo isset($var['csrf_token']) ? $var['csrf_token'] : ''; ?>">
+    <input type="hidden" name="#file" value="dockermirror/dockermirror.cfg">
+    <input type="hidden" name="MIRRORS" id="dm_mirrors" value="<?php echo htmlspecialchars($saved); ?>">
+
+    <div class="dm-card">
+      <h2>选择镜像源</h2>
+      <div class="dm-grid">
+        <?php foreach ($presets as $k => $v): ?>
+        <label class="dm-preset <?php echo $selected === $k ? 'sel' : ''; ?>" data-key="<?php echo $k; ?>">
+          <div>
+            <input type="radio" name="dm_preset" value="<?php echo htmlspecialchars($v['url']); ?>"
+                   data-key="<?php echo $k; ?>" <?php echo $selected === $k ? 'checked' : ''; ?>>
+            <span class="pn"><?php echo htmlspecialchars($v['name']); ?></span>
+          </div>
+          <div class="pd"><?php echo htmlspecialchars($v['desc']); ?></div>
+        </label>
+        <?php endforeach; ?>
+      </div>
+      <div class="dm-hint">阿里云等需要专属地址的镜像源，请在下方「自定义」中填写。</div>
+    </div>
+
+    <div class="dm-card">
+      <h2>自定义镜像源</h2>
+      <label>
+        <input type="radio" name="dm_preset" value="__custom__" id="dm_custom_radio"
+               <?php echo $selected === 'custom' ? 'checked' : ''; ?>>
+        使用下方自定义地址
+      </label>
+      <div style="margin-top:10px;">
+        <textarea class="dm-area" id="dm_custom" placeholder="每行一个镜像源地址，例如：&#10;https://docker.m.daocloud.io&#10;https://mirror.ccs.tencentyun.com"><?php echo htmlspecialchars($custom_text); ?></textarea>
+        <div class="dm-hint">每行一个地址，需以 http:// 或 https:// 开头，可填多个（按顺序尝试）。</div>
+      </div>
+    </div>
+
+    <div style="margin:6px 0 18px;">
+      <input type="submit" name="#default" value="恢复默认设置" class="dm-btn dm-btn-ghost">
+      <input type="submit" name="#apply"   value="保存并应用"   class="dm-btn dm-btn-primary" id="dm_apply">
+    </div>
+  </form>
+
+  <div class="dm-card">
+    <h2>说明</h2>
+    <ul>
+      <li>镜像源（registry-mirrors）用于加速 Docker Hub（docker.io）的镜像拉取。</li>
+      <li>配置保存在 U 盘 <code>/boot/config/plugins/dockermirror/</code>，开机自动重写，重启不丢失。</li>
+      <li>安装、卸载插件都不会重启 Docker，不会中断正在运行的容器。</li>
+      <li>点击「保存并应用」后，若镜像源确有变化，Docker 会在后台重启（约需十几秒），请稍候刷新查看。</li>
+      <li>请勿在 Unraid 自带 Docker 设置页重复设置 Registry Mirrors，以本插件为准。</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+$(function(){
+  var $form = $('#dm_form');
+
+  /* 组装 MIRRORS：把多行自定义地址转成逗号分隔 */
+  function syncMirrors(){
+    var $checked = $('input[name=dm_preset]:checked');
+    var val = $checked.length ? $checked.val() : '';
+    if (val === '__custom__') {
+      var lines = $('#dm_custom').val().split('\n')
+        .map(function(s){ return s.trim(); })
+        .filter(function(s){ return s.length > 0; });
+      val = lines.join(',');
+    }
+    $('#dm_mirrors').val(val);
+  }
+
+  /* 预设点击：高亮 + 同步 */
+  $('.dm-preset').on('click', function(){
+    $('.dm-preset').removeClass('sel');
+    $(this).addClass('sel');
+    $(this).find('input[name=dm_preset]').prop('checked', true);
+    syncMirrors();
+  });
+
+  /* 自定义文本域：输入即切到自定义模式 */
+  $('#dm_custom').on('input focus', function(){
+    $('#dm_custom_radio').prop('checked', true);
+    $('.dm-preset').removeClass('sel');
+    syncMirrors();
+  });
+
+  /* 提交前同步一次，确保 MIRRORS 正确 */
+  $form.on('submit', function(){ syncMirrors(); });
+
+  /* 确保按钮可用（Unraid 默认可能因未检测到改动而禁用） */
+  $('#dm_apply, input[name="#default"]').prop('disabled', false);
+
+  syncMirrors();
+});
+</script>
