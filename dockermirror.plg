@@ -6,7 +6,7 @@
 <!ENTITY pluginURL "https://raw.githubusercontent.com/bcfxclub/dockermirror/main/dockermirror.plg">
 <!ENTITY bundle    "dockermirror-2026.10.30.tgz">
 <!ENTITY bundleURL "https://github.com/bcfxclub/dockermirror/releases/download/2026.10.30/dockermirror-2026.10.30.tgz">
-<!ENTITY md5       "c735ed8858ddbd80b37481cbd6f7c2f4">
+<!ENTITY md5       "c7ce452e4937e6c34f57eaf20ba554e3">
 ]>
 <PLUGIN name="&name;"
         author="&author;"
