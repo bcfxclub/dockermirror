@@ -1,0 +1,7 @@
+# 构建产物（仓库根 dist/ 含 tgz，Release 时由 CI 生成，不纳入版本）
+/dist/*.tgz
+
+# 临时文件
+tmptest/
+__pycache__/
+*.pyc
